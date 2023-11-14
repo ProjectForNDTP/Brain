@@ -13,36 +13,68 @@ opt-level = "s"
 debug = true    # Symbols are nice and they don't increase the size on Flash
 opt-level = "z"
 
-[features]
-default = ["std", "esp-idf-svc/native", "nightly" ]
-
-pio = ["esp-idf-svc/pio"]
-std = ["alloc", "esp-idf-svc/binstart", "esp-idf-svc/std" ]
-alloc = ["esp-idf-svc/alloc"]
-nightly = ["esp-idf-svc/nightly" ]
-experimental = ["esp-idf-svc/experimental"]
-embassy = ["esp-idf-svc/embassy-sync", "esp-idf-svc/critical-section", "esp-idf-svc/embassy-time-driver" ]
-
 [dependencies]
-log = { version = "0.4", default-features = false }
-esp-idf-svc = { version = "0.47.1", default-features = false }
-#rgb = "0.8"
-anyhow = "1.0"
-#embassy-futures = "0.1.0"
-#embassy-executor = { version = "0.1.1", default-features = false, features = [ "nightly", "integrated-timers" ] }
-#embassy-time = { version = "0.1.0", default-features = false, features = [ "nightly" ] }
-xtensa-lx = { version = "0.8", optional = true, default-features = false }
-static_cell = "1"
-embedded-hal = "0.2"
+rmp3 = { version = "0.3.1", default-features = false, features = [] }
 
-[patch.crates-io]
-# Ensure we use the git version of all of the embassy stuff. Specify it here instead of
-# in [dependencies] because this ensures that we don't duplicate any dependencies like
-# `embassy-time`. This avoids bugs like this one:
-# https://github.com/embassy-rs/embassy/issues/1115
-embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "26474ce6eb759e5add1c137f3417845e0797df3a" }
-embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "26474ce6eb759e5add1c137f3417845e0797df3a" }
-embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "26474ce6eb759e5add1c137f3417845e0797df3a" }
+embassy-time   = { version = "0.1.5",  features = ["nightly" ] }
+aes                = "0.8.3"
+critical-section   = "1.1.2"
+crypto-bigint      = { version = "0.5.3", default-features = false }
+embassy-executor   = { version = "0.3.0", features = ["nightly"] }
+embassy-sync       = "0.3.0"
+embedded-graphics  = "0.8.1"
+embedded-hal = "0.2.7"
+embedded-hal-1     = { version = "=1.0.0-rc.1", package = "embedded-hal" }
+embedded-hal-async = "=1.0.0-rc.1"
+embedded-io-async  = "0.6.0"
+esp-alloc          = "0.3.0"
+esp-backtrace      = { version = "0.9.0", features = ["esp32", "panic-handler", "exception-handler", "print-uart"] }
+esp-println        = { version = "0.7.0", features = ["esp32"] }
+heapless           = "0.7.16"
+lis3dh-async       = "0.8.0"
+sha2               = { version = "0.10.8", default-features = false}
+smart-leds = "0.3.0"
+ssd1306            = "0.8.4"
+static_cell        = { version = "=1.2.0", features = ["nightly"] }
+esp32-hal            = {version = "0.16.0", features = [ "embassy-time-timg0" ] }
+micromath = "2.1"
+fugit = "0.3.7"
+esp32 = "0.27.0"
+log = "0.4"
+embedded-sdmmc = "0.6.0"
+ws2812-spi = "0.4.0"
+ringbuffer = { version = "0.15.0", default-features = false }
+#toml = { version = "0.8.8", default-features = false, features = [] }
+serde = { version = "1.0.192", default-features = false, features = [ "alloc", "derive" ] }
+
+[features]
+default            = ["rt", "vectored", "xtal-40mhz", "async", "log", "embassy", "embassy-executor-thread", "psram-2m" ]
+async              = ["esp32-hal/async"]
+bluetooth          = []
+debug              = ["esp32-hal/debug"]
+defmt              = ["esp32-hal/defmt", "esp-println/defmt"]
+eh1                = ["esp32-hal/eh1"]
+log                = ["esp32-hal/log", "esp-println/log"]
+rt                 = []
+ufmt               = ["esp32-hal/ufmt"]
+vectored           = ["esp32-hal/vectored"]
+xtal-26mhz         = ["esp32-hal/xtal-26mhz"]
+xtal-40mhz         = ["esp32-hal/xtal-40mhz"]
+
+# Embassy support
+embassy                    = ["esp32-hal/embassy"]
+embassy-time-timg0         = ["esp32-hal/embassy-time-timg0", "embassy-time/tick-hz-1_000_000"]
+embassy-executor-thread    = ["esp32-hal/embassy-executor-thread"]
+embassy-executor-interrupt = ["esp32-hal/embassy-executor-interrupt"]
+
+# PSRAM support
+psram     = []
+psram-2m  = ["esp32-hal/psram-2m", "psram"]
+psram-4m  = ["esp32-hal/psram-4m", "psram"]
+psram-8m  = ["esp32-hal/psram-8m", "psram"]
 
 [build-dependencies]
 embuild = "0.31.3"
+
+[patch.crates-io]
+rmp3 = { path = "/tmp/rmp3" }

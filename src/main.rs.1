@@ -1,0 +1,133 @@
+#![feature(type_alias_impl_trait)]
+#![feature(restricted_std)]
+#![feature(asm_experimental_arch)]
+
+//use esp_backtrace as _;
+use xtensa_lx_rt::entry;
+
+use log::{info};
+use core::time::Duration;
+use std::ffi::c_schar;
+use std::ffi::CStr;
+use std::ffi::c_void;
+
+// use embassy_time::Timer;
+// use embassy_executor::Executor;
+// use embassy_executor::Spawner;
+// use static_cell::StaticCell;
+
+//pub use embassy_macros::{task, main_std};
+
+// ~/espup ...
+// source ~/esp....sh
+// cd esp-test5
+// cargo run
+
+#[no_mangle]
+extern "C" fn test(_: *mut core::ffi::c_void) {
+        info!("Hello from `test`");
+        unsafe {
+        esp_idf_svc::hal::task::destroy(esp_idf_svc::hal::task::current().unwrap());
+        }
+        esp_idf_svc::hal::task::do_yield();
+    }
+
+fn main() {
+    esp_idf_svc::sys::link_patches();
+
+    // Bind the log crate to the ESP Logging facilities
+    esp_idf_svc::log::EspLogger::initialize_default();
+    
+    {
+        use esp_idf_svc::hal::ledc::{config::TimerConfig, LedcDriver, LedcTimerDriver};
+        use esp_idf_svc::hal::peripherals::Peripherals;
+        use esp_idf_svc::hal::prelude::*;
+
+        let peripherals = Peripherals::take().unwrap();
+        
+        let timer_driver =
+        LedcTimerDriver::new(peripherals.ledc.timer0,
+            &TimerConfig::default()
+                .frequency(312500.Hz().into())
+                .resolution(esp_idf_svc::hal::ledc::Resolution::Bits8)
+                .speed_mode(esp_idf_svc::hal::ledc::SpeedMode::HighSpeed)
+        ).unwrap();
+        let mut driver = LedcDriver::new(peripherals.ledc.channel0, timer_driver, peripherals.pins.gpio2).unwrap();
+
+        let max_duty = driver.get_max_duty();
+        info!("{max_duty}");
+
+        let mut pin = esp_idf_svc::hal::gpio::PinDriver::output(unsafe { esp_idf_svc::hal::gpio::Gpio19::new() }).unwrap();
+        use embedded_hal::digital::v2::OutputPin;
+
+        let mut pin_dac = esp_idf_svc::hal::gpio::PinDriver::output(unsafe { esp_idf_svc::hal::gpio::Gpio26::new() }).unwrap();
+
+
+        let mut s = false;
+
+        loop {
+            let start = std::time::Instant::now();
+            loop {
+                let t = start.elapsed().as_secs_f32() * 1000.0;
+                if t > 1000.0 {
+                    break;
+                }
+                let t = (t.sin()+1.0)/2.0;
+                let t = t * (max_duty as f32);
+
+                let peripherals = esp32_hal::peripherals::Peripherals::take();
+                let io = esp32_hal::IO::new(peripherals.GPIO, peripherals.IO_MUX);
+                let pin25 = io.pins.gpio25.into_analog();
+                use esp32_hal::analog::AnalogExt;
+                let analog = esp32_hal::peripherals::Peripherals::take().SENS.split();
+                let mut dac1 = esp32_hal::dac::DAC1::dac(analog.dac1, pin25).unwrap();
+                use esp32_hal::dac::DAC;
+                dac1.write(t as u8);
+                
+                driver.set_duty(t as u32).unwrap();
+                
+                if s {
+                    embedded_hal::digital::v2::OutputPin::set_high(&mut pin);
+                } else {
+                    embedded_hal::digital::v2::OutputPin::set_low(&mut pin);
+                }
+                s = !s;
+            }
+            
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+    }
+    unreachable!();
+}
+
+// #[embassy_executor::task]
+// async fn main1(s: Spawner) {
+    
+//     // It is necessary to call this function once. Otherwise some patches to the runtime
+//     // implemented by esp-idf-sys might not link properly. See https://github.com/esp-rs/esp-idf-template/issues/71
+//     esp_idf_svc::sys::link_patches();
+
+//     // Bind the log crate to the ESP Logging facilities
+//     esp_idf_svc::log::EspLogger::initialize_default();
+
+//     info!("Hello, world!");
+    
+// #[embassy_executor::task(pool_size = 10)]
+//     async fn task(s: i32) {
+//         loop {
+//         info!("Hello, world! {s}");
+
+//         Timer::after_secs(1).await;
+//         }
+//     }
+
+//     for i in 0..5 {
+//         s.spawn(task(i)).unwrap();
+//     }
+
+//         loop {
+//         info!("Hello, world! main");
+
+//         Timer::after_secs(1).await;
+//         }
+// }
