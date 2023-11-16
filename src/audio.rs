@@ -20,7 +20,7 @@ const READ_BUF: usize = 512;
 
 // static volume: Option<Mutex<NoopRawMutex, RefCell<VolumeManager<SdCard, MockTimestamp>>>> = None;
 
-const PacketQueueSize: usize = 4;
+const PacketQueueSize: usize = 5;
 const PacketSampleslen: usize = 8_000;
 
 struct AudioPacket {
@@ -37,14 +37,14 @@ static mut QueueInitialized: bool = false;
 
 #[embassy_executor::task]
 pub async fn decoder(
-    interrupt: Rc<blocking_mutex::Mutex<NoopRawMutex, Cell<bool>>>,
+    interrupt: &'static Signal<NoopRawMutex, ()>,
+    ended: &'static Signal<NoopRawMutex, ()>,
     mut reader: Box<dyn FnMut(&mut [u8]) -> Option<usize>>,
 ) {
     println!("Start audio");
 
     // Initialize packet queue
     if !unsafe { QueueInitialized } {
-        println!("QueueInitialized");
         for _ in 0..PacketQueueSize {
             AudioChannelRecycle
                 .send(AudioPacket {
@@ -60,13 +60,11 @@ pub async fn decoder(
     let mut buf_previously_consumed = buf.len();
     let mut out_buf = [0i16; MAX_SAMPLES_PER_FRAME];
 
-    println!("A");
-
-    // let mut packet = AudioChannelRecycle.receive().await;
-    let mut packet = AudioPacket {
-        samples: Box::new(Vec::new()),
-        sample_rate: 0,
-    };
+    let mut packet = AudioChannelRecycle.receive().await;
+    // let mut packet = AudioPacket {
+    //     samples: Box::new(Vec::new()),
+    //     sample_rate: 0,
+    // };
 
     packet.samples.clear();
 
@@ -76,44 +74,32 @@ pub async fn decoder(
 
     let mut decoder = RawDecoder::new();
 
-    println!("B");
-
     async {
         loop {
-            if interrupt.lock(|x| x.get()) {
-                // AudioChannel.send(packet).await;
-                return;
-            }
-
-            println!("C");
-
             // Copy unconsumed bytes
+            // println!("A");
             let unconsumed = buf.len() - buf_previously_consumed;
             for i in 0..unconsumed {
                 buf[i] = buf[buf_previously_consumed + i];
             }
+            // println!("C");
             // println!("copied: buf[..{unconsumed}] = buf[{buf_previously_consumed}..{})]", buf_previously_consumed + unconsumed);
 
             // Read buffer
-
-    println!("D");
             let len = match reader(&mut buf[unconsumed..]) {
                 Some(len) => len,
                 None => {/* println!("Reader returned None"); */ return},
             };
 
-    println!("D1");
-
+            // println!("D");
             let buf = &mut buf[..(unconsumed + len)];
             // println!("availible: buf[..{}]", buf.len());
 
-    println!("D2");
+            // println!("E");
 
             if let Some((frame, bytes_consumed)) = decoder.next(buf, &mut out_buf) {
                 buf_previously_consumed = bytes_consumed;
                 // println!("buf_previously_consumed {buf_previously_consumed}");
-
-    println!("E");
 
                 if let Frame::Audio(frame) = frame {
                     // println!("frame {} samples", frame.sample_count());
@@ -125,10 +111,9 @@ pub async fn decoder(
 
                     packet.sample_rate = frame.sample_rate();
 
-    println!("F");
 
                     for i in 0..sample_count {
-                        //packet.samples.push((samples[i * channels]  / 256 + 127) as u8);
+                        packet.samples.push((samples[i * channels]  / 256 + 127) as u8).unwrap();
                         packet
                             .samples
                             .push((samples[i * channels] as i16 / 256 + 128) as u8)
@@ -137,13 +122,12 @@ pub async fn decoder(
                         smp_cnt += 1;
                         if packet.samples.is_full() {
                             bfs_cnt += 1;
-                            //AudioChannel.send(packet).await;
-                            //packet = AudioChannelRecycle.receive().await;
+                            AudioChannel.send(packet).await;
+                            packet = AudioChannelRecycle.receive().await;
                             packet.samples.clear();
                         }
                     }
 
-    println!("G");
                 }
                 // } else {
                 //     match frame {
@@ -153,10 +137,8 @@ pub async fn decoder(
                 // }
             }
 
-    println!("H");
-
-            if interrupt.lock(|x| x.get()) {
-                // AudioChannel.send(packet).await;
+            if interrupt.signaled() {
+                AudioChannel.send(packet).await;
                 return;
             }
         }
@@ -165,6 +147,9 @@ pub async fn decoder(
 
     println!("buffs {bfs_cnt}, samples {smp_cnt}");
     println!("END OF FILE, micros: {}", t.elapsed().as_micros());
+
+    println!("Signal ended");
+    ended.signal(());
 }
 
 type TimerType<'a> =
@@ -178,13 +163,20 @@ pub async fn worker(mut writer: Box<dyn FnMut(u8) -> ()>) {
     let mut slice = &audio_packet.samples[..];
     let ticks_per_second = embassy_time::TICK_HZ as u32;
     let mut ticks_per_sample = (ticks_per_second / audio_packet.sample_rate) as u64;
+
+    println!("Worker started");
+
     let mut last = Instant::now();
 
     loop {
+        // println!("A0");
+
         if slice.len() == 0 {
             // TODO: Add benchmarking
+    // println!("Worker get");
             AudioChannelRecycle.send(audio_packet).await;
             audio_packet = AudioChannel.receive().await;
+            // println!("Worker got");
 
             slice = &audio_packet.samples[..];
             ticks_per_sample = (ticks_per_second / audio_packet.sample_rate) as u64;
@@ -193,35 +185,46 @@ pub async fn worker(mut writer: Box<dyn FnMut(u8) -> ()>) {
                 return;
             }
         }
+        // println!("A");
 
         let now = Instant::now();
+        // println!("A1");
         // let dt = match now.checked_sub(last) {
         //     Some(dt) => dt,
         //     None => (u64::MAX - last) + now,
         // };
         let dt = now.duration_since(last).as_ticks();
 
+        // println!("B");
         if dt >= ticks_per_sample {
+            // println!("B1");
             let sample = slice[0];
 
             // dac.write(sample);
 
+            // println!("C");
             writer(sample);
+            // println!("D");
 
             let skip = (dt / ticks_per_sample) as usize;
+            // println!("D1");
             last = now
                 .checked_sub(Duration::from_ticks(dt % ticks_per_sample))
                 .unwrap_or(now);
+            // println!("E");
 
-            if dt > ticks_per_sample + 50000 {
+            if dt > ticks_per_sample + 10000 {
                 println!("TOO LONG!!! : {dt} : {ticks_per_sample} :");
             }
 
             if slice.len() > skip {
+                // println!("A1");
                 slice = &slice[skip..];
+                // println!("A2");
             } else {
                 slice = &[];
             }
         }
+        // println!("F");
     }
 }

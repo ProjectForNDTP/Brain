@@ -11,15 +11,16 @@ use core::convert::Infallible;
 //     buttons.replace(Some(pins));
 // }
 
-pub async fn check_pressed(pins: &Vec<Box<dyn InputPin<Error = Infallible>>>) -> Option<usize> {
-    println!("check Buttons");
-    return Some(0);
-    use core::ops::Deref;
+pub async fn check_pressed(pins: &[AnyPin<Input<PullUp>>]) -> Option<usize> {
+    // println!("check Buttons");
+    
+    // return Some(0);
     for (i, b) in pins.iter().enumerate() {
-        println!("{i}");
-        let pressed = InputPin::is_low(b.deref()).unwrap() && {
-            Ticker::every(Duration::from_millis(50)).next().await;
-            InputPin::is_low(b.deref()).unwrap()
+        // println!("{i}");
+        let pressed = b.is_low().unwrap() && {
+            // println!("{i}");
+            embassy_time::Timer::after_millis(50).await;
+            b.is_low().unwrap()
         };
         if pressed {
             return Some(i);
