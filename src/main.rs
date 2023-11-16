@@ -75,7 +75,8 @@ type SinglecoreMutex<T: Send> = Mutex<NoopRawMutex, T>;
 
 //static main_core_spawner: MulticoreMutex<Option<RefCell<SendSpawner>>> = None;
 // static worker_core_spawner: MulticoreMutex<Option<RefCell<SendSpawner>>> = None;
-static main_core_spawner: Option<SendSpawner> = None;
+static 
+_core_spawner: Option<SendSpawner> = None;
 static worker_core_spawner: Option<SendSpawner> = None;
 
 // static decoder_interrupt: blocking_mutex::Mutex<CriticalSectionRawMutex, Cell<bool>> = blocking_mutex::Mutex::new(Cell::new(false));
@@ -101,18 +102,18 @@ async fn main(_spawner: Spawner) -> ! {
             ALLOCATOR_MEM_SIZE,
         )
     };
-    {
-        let mut buf = Vec::new();
-        const len: usize = 32_000;
-        for i in 0..len {
-            buf.push((i % 256) as u8);
-        }
-        for i in 0..len {
-            if buf[i] != (i % 256) as u8 {
-                println!("{i}: expected {}, got {}", buf[i], i % 255);
-            }
-        }
-    }
+    // {
+    //     let mut buf = Vec::new();
+    //     const len: usize = 32_000;
+    //     for i in 0..len {
+    //         buf.push((i % 256) as u8);
+    //     }
+    //     for i in 0..len {
+    //         if buf[i] != (i % 256) as u8 {
+    //             println!("{i}: expected {}, got {}", buf[i], i % 255);
+    //         }
+    //     }
+    // }
 
     // Init peripherals
     let peripherals = Peripherals::take();
@@ -141,6 +142,8 @@ async fn main(_spawner: Spawner) -> ! {
     // let audio_timer = timer_group0.timer1;
     // let audio_timer_freq = 40_000_000u32;
 
+    delay.delay(1u32);
+
     let mut dac = DAC2::dac(analog.dac1, io.pins.gpio26.into_analog()).unwrap();
 
     // Init worker
@@ -156,11 +159,11 @@ async fn main(_spawner: Spawner) -> ! {
         });
     };
 
-    let WORKER_CORE_STACK: &mut Stack<8192> = make_static!(Stack::new());
+    // let WORKER_CORE_STACK: &mut Stack<8192> = make_static!(Stack::new());
 
-    let _guard = cpu_control
-        .start_app_core(unsafe { WORKER_CORE_STACK }, worker_fnctn)
-        .unwrap();
+    // let _guard = cpu_control
+    //     .start_app_core(unsafe { WORKER_CORE_STACK }, worker_fnctn)
+    //     .unwrap();
 
     // ADC
     let adc_reader = {
@@ -188,17 +191,17 @@ async fn main(_spawner: Spawner) -> ! {
             let mosi = io.pins.gpio23;
             let cs = io.pins.gpio22;
 
-            let mut spi = Spi::new(
-                peripherals.SPI2,
-                sclk,
-                mosi,
-                miso,
-                cs,
-                3u32.MHz(),
-                SpiMode::Mode0,
-                &clocks,
-            );
-            let mut led = ws2812_spi::Ws2812::new(spi);
+            // let mut spi = Spi::new(
+            //     peripherals.SPI2,
+            //     sclk,
+            //     mosi,
+            //     miso,
+            //     cs,
+            //     3u32.MHz(),
+            //     SpiMode::Mode0,
+            //     &clocks,
+            // );
+            // let mut led = ws2812_spi::Ws2812::new(spi);
             const LED_LEN: usize = 10;
 
             let mut buf = [RGB::default(); LED_LEN];
@@ -215,7 +218,7 @@ async fn main(_spawner: Spawner) -> ! {
             move |color: RGB<u8>, led_num: usize| {
                 println!("Write led {color} {led_num}");
                 buf[led_num] = color;
-                SmartLedsWrite::write(&mut led, (0..buf.len()).map(|i| buf[i])).unwrap();
+                //SmartLedsWrite::write(&mut led, (0..buf.len()).map(|i| buf[i])).unwrap();
             }
         }
     };
@@ -255,7 +258,7 @@ async fn main(_spawner: Spawner) -> ! {
                 panic!("Reader output buffer if of length 0");
             }
             let len = out.len().min(slice.len());
-            println!("slice len {} {}", slice.len(), len);
+            //println!("slice len {} {}", slice.len(), len);
             for i in 0..len {
                 out[i] = slice[i];
             }

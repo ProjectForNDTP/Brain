@@ -8,7 +8,7 @@ use heapless::Vec;
 use rmp3::{Decoder, Frame, RawDecoder, MAX_SAMPLES_PER_FRAME};
 use static_cell::make_static;
 
-const READ_BUF: usize = 4096;
+const READ_BUF: usize = 512;
 
 // struct MockTimestamp();
 
@@ -44,6 +44,7 @@ pub async fn decoder(
 
     // Initialize packet queue
     if !unsafe { QueueInitialized } {
+        println!("QueueInitialized");
         for _ in 0..PacketQueueSize {
             AudioChannelRecycle
                 .send(AudioPacket {
@@ -59,6 +60,8 @@ pub async fn decoder(
     let mut buf_previously_consumed = buf.len();
     let mut out_buf = [0i16; MAX_SAMPLES_PER_FRAME];
 
+    println!("A");
+
     // let mut packet = AudioChannelRecycle.receive().await;
     let mut packet = AudioPacket {
         samples: Box::new(Vec::new()),
@@ -72,32 +75,48 @@ pub async fn decoder(
     let t = Instant::now();
 
     let mut decoder = RawDecoder::new();
-    
+
+    println!("B");
+
     async {
         loop {
+            if interrupt.lock(|x| x.get()) {
+                // AudioChannel.send(packet).await;
+                return;
+            }
+
+            println!("C");
+
             // Copy unconsumed bytes
             let unconsumed = buf.len() - buf_previously_consumed;
             for i in 0..unconsumed {
                 buf[i] = buf[buf_previously_consumed + i];
             }
-            println!("copied: buf[..{unconsumed}] = buf[{buf_previously_consumed}..{})]", buf_previously_consumed + unconsumed);
+            // println!("copied: buf[..{unconsumed}] = buf[{buf_previously_consumed}..{})]", buf_previously_consumed + unconsumed);
 
             // Read buffer
+
+    println!("D");
             let len = match reader(&mut buf[unconsumed..]) {
                 Some(len) => len,
-                None => {println!("Reader returned None"); return},
+                None => {/* println!("Reader returned None"); */ return},
             };
 
-            let buf = &mut buf[..(unconsumed + len)];
-            println!("availible: buf[..{}]", buf.len());
+    println!("D1");
 
-            let res = decoder.next(buf, &mut out_buf);
-            if let Some((frame, bytes_consumed)) = res {
+            let buf = &mut buf[..(unconsumed + len)];
+            // println!("availible: buf[..{}]", buf.len());
+
+    println!("D2");
+
+            if let Some((frame, bytes_consumed)) = decoder.next(buf, &mut out_buf) {
                 buf_previously_consumed = bytes_consumed;
-                println!("buf_previously_consumed {buf_previously_consumed}");
+                // println!("buf_previously_consumed {buf_previously_consumed}");
+
+    println!("E");
 
                 if let Frame::Audio(frame) = frame {
-                    println!("frame {} samples", frame.sample_count());
+                    // println!("frame {} samples", frame.sample_count());
                     //println!("P {bfs_cnt}");
                     //println!("{} {} {} {}", frame.bitrate(), frame.sample_count(), frame.sample_rate(), frame.channels());
                     let samples = frame.samples();
@@ -105,6 +124,8 @@ pub async fn decoder(
                     let sample_count = frame.sample_count();
 
                     packet.sample_rate = frame.sample_rate();
+
+    println!("F");
 
                     for i in 0..sample_count {
                         //packet.samples.push((samples[i * channels]  / 256 + 127) as u8);
@@ -121,15 +142,18 @@ pub async fn decoder(
                             packet.samples.clear();
                         }
                     }
-                } else {
-                    match frame {
-                        Frame::Other(a) => println!("other: {:?}", a),
-                        _ => {},
-                    }
+
+    println!("G");
                 }
-            } else {
-                println!("None!!!");
+                // } else {
+                //     match frame {
+                //         Frame::Other(a) => println!("other: {:?}", a),
+                //         _ => {},
+                //     }
+                // }
             }
+
+    println!("H");
 
             if interrupt.lock(|x| x.get()) {
                 // AudioChannel.send(packet).await;
