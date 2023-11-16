@@ -1,51 +1,43 @@
 use super::*;
 
-use alloc::{string::String};
 use alloc::collections::BTreeMap as Map;
 use serde::Deserialize;
 
-#[derive(Debug, Deserialize)]
-struct QnaEntry {
-    question: String,
-    led: usize,
-    button: usize,
-    correct_answer: String,
-    wrong_answer: String,
+#[derive(Debug)]
+pub struct QnaEntry {
+    pub name: String,
+    pub question: String,
+    pub led: usize,
+    pub button: usize,
+    pub correct_answer: String,
+    pub wrong_answer: String,
 }
 
-#[derive(Debug, Deserialize)]
-struct LectureEntry {
-    lecture: String,
+#[derive(Debug)]
+pub struct LectureEntry {
+    pub lecture: String,
 }
 
-#[derive(Debug, Deserialize)]
-struct Config {
-    qna: Map<String, QnaEntry>,
-    lecture: Option<LectureEntry>,
+#[derive(Debug)]
+pub struct Config {
+    pub qna: Vec<QnaEntry>,
+    pub lecture: Option<LectureEntry>,
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        let mut qna = Map::new();
-        let entry = QnaEntry {
-            question: "".into(),
-            led: 0,
-            button: 0,
-            correct_answer: "".into(),
-            wrong_answer: "".into(),
-        };
-        qna.insert("smth", entry);
+pub fn default_config() -> Config {
+    let qna = vec![QnaEntry {
+        name: "smth_part".into(),
+        question: "smth".into(),
+        led: 0,
+        button: 0,
+        correct_answer: "c_an".into(),
+        wrong_answer: "c_wr".into(),
+    }];
+    println!("{} {}", qna[0].question, qna[0].name);
 
-        Self {
-            qna: qna,
-            lecture: None,
-        }
-    }
+    Config { qna, lecture: None }
 }
 
-fn default_recordings() -> Map<String, &'static [u8]> {
-    let mut map = Map::new();
-    map.insert("key".into(), make_static!("../test.mp3"));
-
-    map
+pub fn default_recordings() -> Vec<(String, &'static [u8])> {
+    vec![("smth".into(), include_bytes!("../test.mp3").as_slice())]
 }

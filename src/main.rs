@@ -6,37 +6,53 @@
 #![no_std]
 #![no_main]
 #![feature(type_alias_impl_trait)]
+#![cfg(not(target_arch = "x86_64"))]
 
-use core::{cell::RefCell, ops::BitOr};
-
-use critical_section::Mutex;
+use core::{
+    cell::{Cell, RefCell},
+    ops::BitOr,
+};
 
 use esp_backtrace as _;
 use esp_println::println;
 
 use esp32_hal::{
-    cpu_control::{CpuControl, Stack},
+    adc::{AdcConfig, Attenuation, ADC, ADC2},
     clock::ClockControl,
-    interrupt,
-    interrupt::Priority,
+    cpu_control::{CpuControl, Stack},
+    dac::{self, DAC, DAC1, DAC2},
+    embassy::{self, executor::Executor},
+    gpio::IO,
+    interrupt::{self, Priority},
+    ledc,
     peripherals::{self, Peripherals, TIMG0, TIMG1},
     prelude::*,
+    prelude::*,
+    spi::{master::Spi, SpiMode},
     timer::{Timer, Timer0, Timer1, TimerGroup},
-    dac, gpio::IO, prelude::*, Delay,
-    dac::DAC1,
-    dac::DAC,
-    psram,
-    embassy::{self, executor::Executor},
-    ledc,
+    Delay,
 };
 
-use embassy_executor::{Spawner};
-use embassy_sync::{blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex}, signal::Signal, channel::Channel};
-use embassy_time::{Duration, Ticker, Instant};
+use embassy_executor::{SendSpawner, Spawner};
+use embassy_sync::{
+    blocking_mutex::{
+        self,
+        raw::{CriticalSectionRawMutex, NoopRawMutex},
+    },
+    channel::Channel,
+    mutex::Mutex,
+    signal::Signal,
+};
+use embassy_time::{Duration, Instant, Ticker};
 
-use log::{error, warn, info, debug};
+use log::{debug, error, info, warn};
 
 use static_cell::make_static;
+
+use alloc::{boxed::Box, rc::Rc, string::String, vec, vec::Vec};
+use embedded_hal::adc::OneShot;
+
+use smart_leds::{colors, SmartLedsWrite, White, RGB, RGBW};
 
 // Allocator
 extern crate alloc;
@@ -44,31 +60,59 @@ extern crate alloc;
 #[global_allocator]
 static ALLOCATOR: esp_alloc::EspHeap = esp_alloc::EspHeap::empty();
 
-const ALLOCATOR_MEM_SIZE: usize = 80_000;
-static ALLOCATOR_MEM: core::mem::MaybeUninit<[u8; ALLOCATOR_MEM_SIZE]> = core::mem::MaybeUninit::uninit();
+const ALLOCATOR_MEM_SIZE: usize = 160_000;
+static ALLOCATOR_MEM: core::mem::MaybeUninit<[u8; ALLOCATOR_MEM_SIZE]> =
+    core::mem::MaybeUninit::uninit();
 
 // Audio packeting
 
 mod audio;
+mod buttons;
 mod config;
 
-type MulticoreMutex<T> = Mutex<CriticalSectionRawMutex, T>;
-type SingleMutex<T> = Mutex<NoopRawMutex, T>;
+type MulticoreMutex<T: Send> = Mutex<CriticalSectionRawMutex, T>;
+type SinglecoreMutex<T: Send> = Mutex<NoopRawMutex, T>;
 
-static main_core_spawner: MulticoreMutex<RefCell<Option<Spawner>>> = None;
-static worker_core_spawner: MulticoreMutex<RefCell<Option<Spawner>>> = None;
+//static main_core_spawner: MulticoreMutex<Option<RefCell<SendSpawner>>> = None;
+// static worker_core_spawner: MulticoreMutex<Option<RefCell<SendSpawner>>> = None;
+static main_core_spawner: Option<SendSpawner> = None;
+static worker_core_spawner: Option<SendSpawner> = None;
+
+// static decoder_interrupt: blocking_mutex::Mutex<CriticalSectionRawMutex, Cell<bool>> = blocking_mutex::Mutex::new(Cell::new(false));
 
 #[main]
 async fn main(_spawner: Spawner) -> ! {
-    critical_section::with(|cs| {
-        main_core_spawner.borrow(cs).as_mut().replace(_spawner.clone())
-    });
+    // main_core_spawner = Some(_spawner.make_send());
+    //main_core_spawner.lock().await.replace(Some(_spawner.make_send()));
+
+    // critical_section::with(|cs| {
+    //     main_core_spawner.borrow(cs).as_mut().replace(_spawner.clone())
+    // });
 
     // Init logger
     esp_println::logger::init_logger(log::LevelFilter::Debug);
 
+    println!("Here we go again!");
+
     // Init allocator
-    unsafe { ALLOCATOR.init(&mut ALLOCATOR_MEM.assume_init()[0] as *mut u8, ALLOCATOR_MEM_SIZE) };
+    unsafe {
+        ALLOCATOR.init(
+            &mut ALLOCATOR_MEM.assume_init()[0] as *mut u8,
+            ALLOCATOR_MEM_SIZE,
+        )
+    };
+    {
+        let mut buf = Vec::new();
+        const len: usize = 32_000;
+        for i in 0..len {
+            buf.push((i % 256) as u8);
+        }
+        for i in 0..len {
+            if buf[i] != (i % 256) as u8 {
+                println!("{i}: expected {}, got {}", buf[i], i % 255);
+            }
+        }
+    }
 
     // Init peripherals
     let peripherals = Peripherals::take();
@@ -80,30 +124,35 @@ async fn main(_spawner: Spawner) -> ! {
     // Init IO pins
     let io = IO::new(peripherals.GPIO, peripherals.IO_MUX);
 
+    let pins: Vec<Box<dyn embedded_hal::digital::v2::InputPin<Error = core::convert::Infallible>>> =
+        vec![Box::new(io.pins.gpio16.into_pull_up_input())];
+
+    buttons::check_pressed(&pins).await;
+
     // Init embassy
     let timer_group0 = esp32_hal::timer::TimerGroup::new(peripherals.TIMG0, &clocks);
     esp32_hal::embassy::init(&clocks, timer_group0.timer0);
 
-    // 
+    //
     let mut rtc = esp32_hal::Rtc::new(peripherals.RTC_CNTL);
     let mut delay = Delay::new(&clocks);
 
     // Prepare audio pipeline
-    let audio_timer = timer_group0.timer1;
-    let audio_timer_freq = 40_000_000u32;
+    // let audio_timer = timer_group0.timer1;
+    // let audio_timer_freq = 40_000_000u32;
 
-    let dac = DAC1::dac(analog.DAC, io.pins.gpio26.into_analog()).unwrap();
+    let mut dac = DAC2::dac(analog.dac1, io.pins.gpio26.into_analog()).unwrap();
 
     // Init worker
     let mut cpu_control = CpuControl::new(system.cpu_control);
-    
+
     let worker_fnctn = move || {
         let executor = make_static!(Executor::new());
         executor.run(|spawner| {
-            spawner.spawn(audio::worker(dac, audio_timer, audio_timer_freq)).ok();
-            critical_section::with(|cs| {
-                worker_core_spawner.borrow(cs).as_mut().replace(spawner)
-            });
+            let writer = move |sample: u8| dac.write(sample);
+            spawner.spawn(audio::worker(Box::new(writer))).ok();
+            // worker_core_spawner.try_lock().unwrap().replace(Some(spawner.make_send()));
+            // worker_core_spawner = Some(spawner.make_send());
         });
     };
 
@@ -113,7 +162,130 @@ async fn main(_spawner: Spawner) -> ! {
         .start_app_core(unsafe { WORKER_CORE_STACK }, worker_fnctn)
         .unwrap();
 
-    //
+    // ADC
+    let adc_reader = {
+        use esp32_hal::adc::{AdcConfig, Attenuation, ADC, ADC2};
+        let mut adc2_config = AdcConfig::new();
+        let mut pin27 =
+            adc2_config.enable_pin(io.pins.gpio27.into_analog(), Attenuation::Attenuation0dB);
+        let mut adc2 = ADC::<ADC2>::adc(analog.adc2, adc2_config).unwrap();
+
+        let mut delay = Delay::new(&clocks);
+
+        // loop {
+        //     let pin27_value: u16 = adc2.read(&mut pin27).unwrap();
+        //     println!("PIN27 ADC reading = {}", pin27_value);
+        //     delay.delay_ms(1500u32);
+        // }
+        move || adc2.read(&mut pin27).unwrap()
+    };
+
+    // Light led
+    let mut led_writer = {
+        {
+            let sclk = io.pins.gpio19;
+            let miso = io.pins.gpio25;
+            let mosi = io.pins.gpio23;
+            let cs = io.pins.gpio22;
+
+            let mut spi = Spi::new(
+                peripherals.SPI2,
+                sclk,
+                mosi,
+                miso,
+                cs,
+                3u32.MHz(),
+                SpiMode::Mode0,
+                &clocks,
+            );
+            let mut led = ws2812_spi::Ws2812::new(spi);
+            const LED_LEN: usize = 10;
+
+            let mut buf = [RGB::default(); LED_LEN];
+
+            // loop {
+            //     use smart_leds::SmartLedsWrite;
+            //     let t = Instant::now();
+            //     SmartLedsWrite::write(&mut led, (0..50).map(|i| smart_leds::RGB::new(i, 0, 0))).unwrap();
+            //     let t1 = t.elapsed().as_micros();
+            //     println!("{}", t1);
+            //     d.delay_ms(500u32);
+            // }
+
+            move |color: RGB<u8>, led_num: usize| {
+                println!("Write led {color} {led_num}");
+                buf[led_num] = color;
+                SmartLedsWrite::write(&mut led, (0..buf.len()).map(|i| buf[i])).unwrap();
+            }
+        }
+    };
+
+    // Qna
+    loop {
+        println!("Check 1");
+        Ticker::every(Duration::from_millis(100)).next().await;
+        println!("RD");
+        let button_num = match buttons::check_pressed(&pins).await {
+            None => continue,
+            Some(num) => num,
+        };
+        println!("RD1");
+        let qna = config::default_config().qna;
+        let qna = qna
+            .iter()
+            .find(|entry| entry.button == button_num)
+            .expect("Button {button_num} pressed but is not defined in qna");
+        let led_num = qna.led;
+        led_writer(colors::RED, led_num);
+
+        let decoder_interrupt: Rc<blocking_mutex::Mutex<NoopRawMutex, Cell<bool>>> =
+            Rc::new(blocking_mutex::Mutex::new(Cell::new(false)));
+
+        println!("qq {}", qna.question);
+        let mut slice = config::default_recordings()
+            .iter()
+            .find(|q| {
+                println!("{:?} {qna:?}", q.0);
+                q.0 == qna.question
+            })
+            .map(|q| q.1)
+            .unwrap();
+        let reader = move |out: &mut [u8]| {
+            if out.len() == 0 {
+                panic!("Reader output buffer if of length 0");
+            }
+            let len = out.len().min(slice.len());
+            println!("slice len {} {}", slice.len(), len);
+            for i in 0..len {
+                out[i] = slice[i];
+            }
+            slice = &slice[len..];
+            if len == 0 {
+                return None;
+            }
+            Some(len)
+        };
+
+        _spawner
+            .spawn(audio::decoder(decoder_interrupt.clone(), Box::new(reader)))
+            .unwrap();
+
+        let start_instant = Instant::now();
+        while !decoder_interrupt.lock(|x| x.get()) {
+            Ticker::every(Duration::from_millis(250)).next().await;
+            println!("RD2");
+            if let Some(_button_num) = buttons::check_pressed(&pins).await {
+                if _button_num != button_num || {
+                    _button_num == button_num && start_instant.elapsed() > Duration::from_secs(4)
+                } {
+                    decoder_interrupt.lock(|x| x.set(true));
+                }
+            }
+            println!("RD3");
+        }
+
+        led_writer(colors::BLACK, led_num);
+    }
 
     loop {}
 
@@ -125,9 +297,9 @@ async fn main(_spawner: Spawner) -> ! {
     //     let mut pin27 =
     //         adc2_config.enable_pin(io.pins.gpio27.into_analog(), Attenuation::Attenuation0dB);
     //     let mut adc2 = ADC::<ADC2>::adc(analog.adc2, adc2_config).unwrap();
-    
+
     //     let mut delay = Delay::new(&clocks);
-    
+
     //     loop {
     //         let pin27_value: u16 = adc2.read(&mut pin27)..unwrap();
     //         println!("PIN27 ADC reading = {}", pin27_value);
@@ -140,7 +312,7 @@ async fn main(_spawner: Spawner) -> ! {
     //     let miso = io.pins.gpio25;
     //     let mosi = io.pins.gpio23;
     //     let cs = io.pins.gpio22;
-        
+
     //     use esp32_hal::spi::{master::Spi, SpiMode};
     //     let mut spi = Spi::new(peripherals.SPI2,
     //         sclk,
@@ -160,24 +332,24 @@ async fn main(_spawner: Spawner) -> ! {
     //     }
     // }
     // loop {}
-/*
-    let mut l1 = 0;
-    let mut t = embassy_time::Instant::now();
+    /*
+        let mut l1 = 0;
+        let mut t = embassy_time::Instant::now();
 
-    loop {
-        let _l1 = timer10.now();
-        let el = _l1 - l1;
-        let t1 = t.elapsed();
-        t = embassy_time::Instant::now();
-        l1 = _l1;
-        println!("{} {}", el, t1.as_micros());
-        d.delay_ms(5u32);
-    }
+        loop {
+            let _l1 = timer10.now();
+            let el = _l1 - l1;
+            let t1 = t.elapsed();
+            t = embassy_time::Instant::now();
+            l1 = _l1;
+            println!("{} {}", el, t1.as_micros());
+            d.delay_ms(5u32);
+        }
 
-    timer10.start(2u64.secs());
-    timer10.listen();
+        timer10.start(2u64.secs());
+        timer10.listen();
 
-*/
+    */
 
     // PWM logic
     // use esp32_hal::ledc::Speed;
@@ -193,7 +365,6 @@ async fn main(_spawner: Spawner) -> ! {
     //         frequency: pwm_freq.Hz(),
     //     })
     //     .unwrap();
-
 
     // let mut channel0 = ledc.get_channel(ledc::channel::Number::Channel0, led);
     // channel0
@@ -212,14 +383,14 @@ async fn main(_spawner: Spawner) -> ! {
     //     channel0.start_duty_fade(100, 0, 1000).unwrap();
     //     while channel0.is_duty_fade_running() {}
     // }
-    
+
     // Old audio logic
     /*
     loop {
         dac1.write(data[cnt]);
         cnt += 1;
         if cnt >= DATA_LEN {
-            cnt = 0; 
+            cnt = 0;
         } else {
             cnt = cnt;
         }
