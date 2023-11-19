@@ -37,9 +37,11 @@ static mut QueueInitialized: bool = false;
 
 #[embassy_executor::task]
 pub async fn decoder(
-    interrupt: &'static Signal<NoopRawMutex, ()>,
-    ended: &'static Signal<NoopRawMutex, ()>,
+    interrupt: Rc<Signal<NoopRawMutex, ()>>,
+    ended: Rc<Signal<NoopRawMutex, ()>>,
     mut reader: Box<dyn FnMut(&mut [u8]) -> Option<usize>>,
+    audio_level: Rc<Mutex<NoopRawMutex, Cell<Option<u32>>>>,
+    audio_level_max: u32,
 ) {
     println!("Start audio");
 
@@ -76,6 +78,13 @@ pub async fn decoder(
 
     async {
         loop {
+            let audio_level_max = u16::MAX as i32;
+            let audio_level = audio_level.lock(|x| x.get()).map(|audio_level| {
+                (audio_level as i32) * (u16::MAX as i32) / (audio_level_max as i32)
+            });
+
+            // println!("al {audio_level}");
+
             // Copy unconsumed bytes
             // println!("A");
             let unconsumed = buf.len() - buf_previously_consumed;
@@ -86,18 +95,26 @@ pub async fn decoder(
             // println!("copied: buf[..{unconsumed}] = buf[{buf_previously_consumed}..{})]", buf_previously_consumed + unconsumed);
 
             // Read buffer
-            let len = match reader(&mut buf[unconsumed..]) {
+            let buf_len = buf.len();
+            let len = match reader(&mut buf[unconsumed.min(buf_len - 1)..]) {
                 Some(len) => len,
-                None => {/* println!("Reader returned None"); */ return},
+                None => {
+                    /* println!("Reader returned None"); */
+                    AudioChannel.send(packet).await;
+                    return;
+                }
             };
 
             // println!("D");
-            let buf = &mut buf[..(unconsumed + len)];
+            let buf = &mut buf[..(unconsumed + len).min(buf_len)];
             // println!("availible: buf[..{}]", buf.len());
 
             // println!("E");
 
             if let Some((frame, bytes_consumed)) = decoder.next(buf, &mut out_buf) {
+                if bytes_consumed > 400 {
+                    println!("bytes_consumed: {bytes_consumed}");
+                }
                 buf_previously_consumed = bytes_consumed;
                 // println!("buf_previously_consumed {buf_previously_consumed}");
 
@@ -111,13 +128,24 @@ pub async fn decoder(
 
                     packet.sample_rate = frame.sample_rate();
 
-
                     for i in 0..sample_count {
-                        packet.samples.push((samples[i * channels]  / 256 + 127) as u8).unwrap();
-                        packet
-                            .samples
-                            .push((samples[i * channels] as i16 / 256 + 128) as u8)
-                            .unwrap();
+                        // packet.samples.push((samples[i * channels]  / 256 + 127) as u8).unwrap();
+                        // let sample = (samples[i * channels] as i16 / 256 + 128) as u8;
+                        let sample = samples[i * channels];
+                        let sample = sample as i32;
+                        // println!("{sample}");
+                        let sample = match audio_level {
+                            Some(audio_level) => sample * audio_level / (audio_level_max / 2),
+                            None => sample,
+                        };
+                        // println!("{sample}");
+                        let sample = (sample / 256 + 128) as u8;
+                        // if sample != 128 {
+                        //     println!("{sample}");
+                        //     println!("out");
+                        // }
+
+                        packet.samples.push(sample).unwrap();
 
                         smp_cnt += 1;
                         if packet.samples.is_full() {
@@ -127,7 +155,6 @@ pub async fn decoder(
                             packet.samples.clear();
                         }
                     }
-
                 }
                 // } else {
                 //     match frame {
@@ -143,10 +170,18 @@ pub async fn decoder(
             }
         }
     }
-        .await;
+    .await;
 
     println!("buffs {bfs_cnt}, samples {smp_cnt}");
-    println!("END OF FILE, micros: {}", t.elapsed().as_micros());
+    println!(
+        "{}, micros: {}",
+        if interrupt.signaled() {
+            "INTERRUPTED"
+        } else {
+            "END OF FILE"
+        },
+        t.elapsed().as_micros()
+    );
 
     println!("Signal ended");
     ended.signal(());
@@ -173,7 +208,7 @@ pub async fn worker(mut writer: Box<dyn FnMut(u8) -> ()>) {
 
         if slice.len() == 0 {
             // TODO: Add benchmarking
-    // println!("Worker get");
+            // println!("Worker get");
             AudioChannelRecycle.send(audio_packet).await;
             audio_packet = AudioChannel.receive().await;
             // println!("Worker got");
@@ -213,11 +248,11 @@ pub async fn worker(mut writer: Box<dyn FnMut(u8) -> ()>) {
                 .unwrap_or(now);
             // println!("E");
 
-            if dt > ticks_per_sample + 10000 {
+            if dt > ticks_per_sample + 80000 {
                 println!("TOO LONG!!! : {dt} : {ticks_per_sample} :");
             }
 
-            if slice.len() > skip {
+            if slice.len() - 1 > skip {
                 // println!("A1");
                 slice = &slice[skip..];
                 // println!("A2");

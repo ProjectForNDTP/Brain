@@ -13,7 +13,7 @@ use core::convert::Infallible;
 
 pub async fn check_pressed(pins: &[AnyPin<Input<PullUp>>]) -> Option<usize> {
     // println!("check Buttons");
-    
+
     // return Some(0);
     for (i, b) in pins.iter().enumerate() {
         // println!("{i}");
