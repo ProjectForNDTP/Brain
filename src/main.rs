@@ -24,7 +24,7 @@ use esp32_hal::{
     cpu_control::{CpuControl, Stack},
     dac::{self, DAC, DAC1, DAC2},
     embassy::{self, executor::Executor},
-    gpio::{AnyPin, Input, PullUp, IO},
+    gpio::{AnyPin, Input, PullUp, PullDown, IO},
     interrupt::{self, Priority},
     ledc,
     peripherals::{self, Peripherals, TIMG0, TIMG1},
@@ -147,7 +147,7 @@ async fn main(_spawner: Spawner) -> ! {
     // let pin = io.pins.gpio16.into_pull_up_input();
     // let pin: esp32_hal::gpio::AnyPin<esp32_hal::gpio::Input<esp32_hal::gpio::PullUp>> = pin.degrade();
 
-    let mode_pin = io.pins.gpio20.into_pull_up_input().degrade();
+    let mode_pin = io.pins.gpio16.into_pull_up_input().degrade();
     async fn check_mode(pin: &AnyPin<Input<PullUp>>) -> config::Mode {
         let first = pin.is_low().unwrap();
         embassy_time::Timer::after_millis(50).await;
@@ -168,18 +168,20 @@ async fn main(_spawner: Spawner) -> ! {
     let check_mode = || check_mode(&mode_pin);
 
     let btn_pins = [
-        io.pins.gpio35.into_pull_up_input().degrade(),
-        io.pins.gpio17.into_pull_up_input().degrade(),
-        io.pins.gpio18.into_pull_up_input().degrade(),
+        io.pins.gpio17.into_pull_down_input().degrade(),
+        io.pins.gpio18.into_pull_down_input().degrade(),
+        // io.pins.gpio17.into_pull_up_input().degrade(),
+        // io.pins.gpio18.into_pull_up_input().degrade(),
     ];
 
-    async fn check_pressed(pins: &[AnyPin<Input<PullUp>>]) -> Option<usize> {
+    async fn check_pressed(pins: &[AnyPin<Input<PullDown>>]) -> Option<usize> {
         for (i, b) in pins.iter().enumerate() {
             // println!("{i}");
-            let pressed = b.is_low().unwrap() && {
+            let is_pressed = || b.is_high().unwrap();
+            let pressed = is_pressed() && {
                 // println!("{i}");
                 embassy_time::Timer::after_millis(50).await;
-                b.is_low().unwrap()
+                is_pressed()
             };
             if pressed {
                 return Some(i);
@@ -319,8 +321,8 @@ async fn main(_spawner: Spawner) -> ! {
     // Plain leds
     let mut led_pins = [
         io.pins.gpio2.into_push_pull_output().degrade(),
-        io.pins.gpio3.into_push_pull_output().degrade(),
-        io.pins.gpio4.into_push_pull_output().degrade(),
+        // io.pins.gpio3.into_push_pull_output().degrade(),
+        // io.pins.gpio4.into_push_pull_output().degrade(),
     ];
     let mut buf: Vec<RGB<u8>> = (0..led_pins.len()).map(|_| RGB::default()).collect();
 
@@ -329,14 +331,22 @@ async fn main(_spawner: Spawner) -> ! {
         buf[led_num] = color;
         for (pin, color) in led_pins.iter_mut().zip(buf.iter()) {
             match color {
-                &colors::BLACK => pin.set_low(),
-                _ => pin.set_high(),
+                &colors::BLACK => pin.set_low().unwrap(),
+                _ => pin.set_high().unwrap(),
             };
         }
     };
 
-    let recordings = config::default_recordings();
-    let qna = config::default_config().qna;
+
+    loop {
+        let color = match check_pressed().await {
+            Some(_) => colors::RED,
+            None => colors::BLACK,
+        };
+        for i in 0..1 {
+            led_writer(color, i);
+        }
+    }
 
     let await_pressed = |timeout: Duration| async move {
         let start = Instant::now();
@@ -377,6 +387,11 @@ async fn main(_spawner: Spawner) -> ! {
         }
     };
 
+    let recordings = config::default_recordings();
+    let _config = config::default_config();
+    let qna = _config.qna;
+    let interactive = _config.interactive; 
+
     let get_recording = |name: &str| {
         recordings
             .iter()
@@ -385,7 +400,7 @@ async fn main(_spawner: Spawner) -> ! {
             .unwrap()
     };
 
-    loop {
+    'change_mode: loop {
         let last_mode = check_mode().await;
 
         // Play mode switch audio
@@ -409,13 +424,14 @@ async fn main(_spawner: Spawner) -> ! {
         await_release().await;
 
         // Stop playing when any button is pressed
-        while !decoder_ended.signaled() && !decoder_interrupt.signaled() {
-            embassy_time::Timer::after_millis(50).await;
-            if let Some(button_num) = check_pressed().await {
-                decoder_interrupt.signal(());
-                await_release().await;
-            }
-        }
+        // Uncomment to appy
+        // while !decoder_ended.signaled() && !decoder_interrupt.signaled() {
+        //     embassy_time::Timer::after_millis(50).await;
+        //     if let Some(button_num) = check_pressed().await {
+        //         decoder_interrupt.signal(());
+        //         await_release().await;
+        //     }
+        // }
         decoder_ended.wait().await;
 
         match last_mode {
@@ -511,7 +527,7 @@ async fn main(_spawner: Spawner) -> ! {
                     led_writer(colors::BLACK, led_num);
 
                     if check_mode().await != last_mode {
-                        continue;
+                        continue 'change_mode;
                     };
                 }
             }
@@ -528,17 +544,17 @@ async fn main(_spawner: Spawner) -> ! {
                     println!("Button {button_num} pressed");
 
                     // println!("RD1");
-                    let qna = qna
+                    let interactive = interactive
                         .iter()
                         .find(|entry| entry.button == button_num)
-                        .expect("Button {button_num} pressed but is not defined in qna");
-                    let led_num = qna.led;
+                        .expect("Button {button_num} pressed but is not defined in interactive");
+                    let led_num = interactive.led;
                     led_writer(colors::RED, led_num);
 
                     // println!("qq {} {}", qna.question.len(), qna.question);
                     // println!("qq {} {}", recordings[0].0.len(), recordings[0].0);
 
-                    let reader = reader(get_recording(qna.question.as_str()));
+                    let reader = reader(get_recording(interactive.interactive.as_str()));
 
                     let decoder_ended = Rc::new(Signal::<NoopRawMutex, ()>::new());
                     let decoder_interrupt = Rc::new(Signal::<NoopRawMutex, ()>::new());
@@ -577,7 +593,7 @@ async fn main(_spawner: Spawner) -> ! {
                     led_writer(colors::BLACK, led_num);
 
                     if check_mode().await != last_mode {
-                        continue;
+                        continue 'change_mode;
                     };
                 }
             }

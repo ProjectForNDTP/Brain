@@ -20,7 +20,7 @@ pub struct QnaEntry {
 #[derive(Debug)]
 pub struct InteractiveEntry {
     pub name: String,
-    pub interactive: Vec<String>,
+    pub interactive: String,
     pub led: usize,
     pub button: usize,
 }
@@ -49,43 +49,43 @@ pub fn default_config() -> Config {
             correct_answer: "correct_answer_for_1.mp3".into(),
             wrong_answer: "wrong_answer_1.mp3".into(),
         },
-        QnaEntry {
-            name: "2".into(),
-            question: "question_2.mp3".into(),
-            led: 1,
-            button: 1,
-            correct_answer: "correct_answer_for_2.mp3".into(),
-            wrong_answer: "wrong_answer_2.mp3".into(),
-        },
-        QnaEntry {
-            name: "3".into(),
-            question: "question_3.mp3".into(),
-            led: 2,
-            button: 2,
-            correct_answer: "correct_answer_for_3.mp3".into(),
-            wrong_answer: "wrong_answer_3.mp3".into(),
-        },
+        // QnaEntry {
+        //     name: "2".into(),
+        //     question: "question_2.mp3".into(),
+        //     led: 1,
+        //     button: 1,
+        //     correct_answer: "correct_answer_for_2.mp3".into(),
+        //     wrong_answer: "wrong_answer_2.mp3".into(),
+        // },
+        // QnaEntry {
+        //     name: "3".into(),
+        //     question: "question_3.mp3".into(),
+        //     led: 2,
+        //     button: 2,
+        //     correct_answer: "correct_answer_for_3.mp3".into(),
+        //     wrong_answer: "wrong_answer_3.mp3".into(),
+        // },
     ];
 
     let interactive = vec![
         InteractiveEntry {
             name: "cerebrum".into(),
-            interactive: vec!["cerebrum.mp3".into()],
+            interactive: "cerebrum.mp3".into(),
             led: 0,    // TODO
             button: 0, // TODO
         },
-        InteractiveEntry {
-            name: "medulla".into(),
-            interactive: vec!["medulla.mp3".into()],
-            led: 1,    // TODO
-            button: 1, // TODO
-        },
-        InteractiveEntry {
-            name: "hindbrain".into(),
-            interactive: vec!["hindbrain_1.mp3".into(), "hindbrain_2.mp3".into()],
-            led: 2,
-            button: 2,
-        },
+        // InteractiveEntry {
+        //     name: "medulla".into(),
+        //     interactive: vec!["medulla.mp3".into()],
+        //     led: 1,    // TODO
+        //     button: 1, // TODO
+        // },
+        // InteractiveEntry {
+        //     name: "hindbrain".into(),
+        //     interactive: vec!["hindbrain_1.mp3".into(), "hindbrain_2.mp3".into()],
+        //     led: 2,
+        //     button: 2,
+        // },
     ];
 
     Config { qna, interactive }
@@ -118,12 +118,13 @@ pub fn default_recordings() -> Vec<(String, &'static [u8])> {
             "question_1.mp3",
             "correct_answer_for_1.mp3",
             "wrong_answer_1.mp3",
-            "question_2.mp3",
-            "correct_answer_for_2.mp3",
-            "wrong_answer_2.mp3",
-            "question_3.mp3",
-            "correct_answer_for_3.mp3",
-            "wrong_answer_3.mp3"
+            // "question_2.mp3",
+            // "correct_answer_for_2.mp3",
+            // "wrong_answer_2.mp3",
+            // "question_3.mp3",
+            // "correct_answer_for_3.mp3",
+            // "wrong_answer_3.mp3",
+            "cerebrum.mp3"
         ]
     );
     // check
@@ -132,7 +133,7 @@ pub fn default_recordings() -> Vec<(String, &'static [u8])> {
         let config = default_config();
         // assert!(config.interactive.is_none() || vec_has(&config.interactive.as_ref().unwrap().lecture));
         for i in config.interactive.iter() {
-            assert!(i.interactive.iter().all(|i| vec_has(i)));
+            assert!(vec_has(&i.interactive));
         }
         for i in config.qna.iter() {
             assert!(vec_has(&i.question));
